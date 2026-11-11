@@ -1,0 +1,18 @@
+export type ModelType = '标准' | '高级';
+export interface SampleInput { id: string; prompt: string; expertKitId: string; model: ModelType }
+export interface RunConfig { concurrency: number; maxRetries: number; timeoutMs: number; batchIntervalMs: number; retryInitialMs: number; retryStepMs: number; retryMaxMs: number; pollIntervalMs: number }
+export const DEFAULT_CONFIG: RunConfig = { concurrency: 2, maxRetries: 2, timeoutMs: 600_000, batchIntervalMs: 10_000, retryInitialMs: 10_000, retryStepMs: 5_000, retryMaxMs: 60_000, pollIntervalMs: 1_000 };
+export interface TaskRef { taskId: string; chatId?: string; subChatId?: string; sessionId?: string; turnId?: string; inputId?: string; messageId?: string }
+export interface TaskQuestion { id: string; kind: 'choice' | 'text' | 'permission'; questions: { text: string; options: string[]; multiple?: boolean }[] }
+export interface AppEvent { id: string; type: string; source: string; at?: string; payload: unknown }
+export interface TaskSnapshot { status: 'running' | 'succeeded' | 'failed' | 'stopped' | 'waiting_human' | 'unknown'; events?: AppEvent[]; question?: TaskQuestion; output?: string; actualInput?: string; actualModel?: ModelType; error?: string; errorCode?: string; retryAfterMs?: number; collection?: 'complete' | 'partial' | 'unavailable'; collectionReason?: string }
+export interface AdapterHealth { connected: boolean; mode: 'real' | 'simulation'; message?: string; version?: string; capabilities?: Record<string, boolean>; [key: string]: unknown }
+export interface AppAdapter { health(): Promise<AdapterHealth>; preflight?(inputs:SampleInput[]):Promise<void>; subscribe?(listener:()=>void):()=>void; submit(input: SampleInput, attemptId: string): Promise<TaskRef>; inspect(ref: TaskRef): Promise<TaskSnapshot>; answer(ref: TaskRef, question: TaskQuestion, indices: number[][]): Promise<void>; stop(ref: TaskRef): Promise<boolean>; focus?(ref: TaskRef): Promise<void> }
+export type AttemptStatus = 'submitting' | 'running' | 'waiting_human' | 'needs_review' | 'succeeded' | 'failed' | 'stopped';
+export interface Attempt { id: string; index: number; status: AttemptStatus; ref?: TaskRef; submittedAt: string; endedAt?: string; durationMs?: number; activeMs: number; humanWaitMs: number; timingAt?:string; humanSince?: string; actualInput?: string; actualModel?: ModelType; output?: string; error?: string; errorCode?: string; collection: 'complete' | 'partial' | 'unavailable'; collectionReason?: string; events: AppEvent[]; answeredQuestionIds: string[] }
+export type SampleStatus = 'queued' | 'submitting' | 'running' | 'waiting_retry' | 'waiting_human' | 'needs_review' | 'succeeded' | 'failed' | 'cancelled';
+export interface SampleRecord extends SampleInput { status: SampleStatus; batch: number; attempts: Attempt[]; startedAt?: string; endedAt?: string; durationMs?: number; humanWaitMs: number; retryAt?: string; lastError?: string }
+export type RunStatus = 'running' | 'paused' | 'waiting_human' | 'needs_review' | 'stopping' | 'stopped' | 'completed';
+export interface RunRecord { id: string; name: string; mode: 'real' | 'simulation'; status: RunStatus; config: RunConfig; createdAt: string; endedAt?: string; samples: SampleRecord[]; currentBatch: number; batchReadyAt?: string; rateLimitUntil?: string; paused: boolean; stopRequested: boolean; error?: string }
+export interface RunStore { save(run: RunRecord): void; get(id: string): RunRecord | undefined; list(): RunRecord[]; close?(): void }
+export interface Metrics { total: number; succeeded: number; failed: number; unfinished: number; firstAttemptSucceeded: number; firstSuccessRate: number | null; overallSuccessRate: number | null; averageDurationMs: number | null; humanWaitMs: number; rateLimitCount: number }

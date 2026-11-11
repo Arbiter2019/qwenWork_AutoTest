@@ -1,0 +1,5 @@
+import { Button, Card, Empty, Table, Typography } from 'antd';
+import type { RunRecord } from '../../../packages/core/src/types';
+import { date } from './api';
+import Status from './Status';
+export default function History({ runs, onSelect }: { runs: RunRecord[]; onSelect: (id: string) => void }) { return <Card title="测试记录"><Table rowKey="id" dataSource={runs} locale={{ emptyText: <Empty description="还没有测试记录，导入 CSV 开始第一次测试" /> }} scroll={{ x: 700 }} columns={[{ title: '测试名称', dataIndex: 'name', render: (name: string, run) => <Button type="link" onClick={() => onSelect(run.id)}>{name}</Button> }, { title: '创建时间', dataIndex: 'createdAt', render: date }, { title: '状态', dataIndex: 'status', render: (s: string) => <Status value={s} /> }, { title: '样本数', render: (_, run) => run.samples.length }, { title: '运行模式', render: (_, run) => <Typography.Text type={run.mode === 'real' ? undefined : 'warning'}>{run.mode === 'real' ? '真实 App' : '模拟'}</Typography.Text> }, { title: '操作', render: (_, run) => <Button onClick={() => onSelect(run.id)}>查看报告</Button> }]} /></Card>; }
