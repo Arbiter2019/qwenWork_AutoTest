@@ -95,3 +95,4 @@ npm run test:ui
 - [验证记录](docs/verification.md)
 
 仓库按用户要求先本地开发，由用户后续手动同步 GitHub。
+# qwenWork_AutoTest
