@@ -2,6 +2,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { parseCsv, CSV_TEMPLATE } from '../packages/core/src/csv.ts';
 import { metrics } from '../packages/core/src/metrics.ts';
 import { reportCsv, reportHtml } from '../packages/core/src/report.ts';
+import { reportJson } from '../packages/core/src/report.ts';
+import { parse } from 'csv-parse/sync';
 import { Scheduler, retryDelay } from '../packages/core/src/scheduler.ts';
 import { Store } from '../packages/storage/src/store.ts';
 import { DEFAULT_CONFIG, type AppAdapter, type RunRecord, type SampleInput, type TaskRef, type TaskSnapshot } from '../packages/core/src/types.ts';
@@ -107,6 +109,12 @@ describe('reports',()=>{
   it('uses imported denominator and successful sample total durations',()=>{
     const r:RunRecord={id:'r',name:'report',mode:'simulation',status:'completed',config,createdAt:'2026-01-01',currentBatch:0,paused:false,stopRequested:false,samples:inputs(4).map((input,i)=>({...input,status:i===3?'failed':'succeeded',batch:0,attempts:Array.from({length:i===2?2:1},(_,j)=>({id:`${i}-${j}`,index:j,status:i===3||i===2&&j===0?'failed':'succeeded',submittedAt:'2026-01-01',activeMs:0,humanWaitMs:0,collection:'partial',events:[],answeredQuestionIds:[]})),durationMs:(i+1)*100,humanWaitMs:0}))};
     expect(metrics(r)).toMatchObject({firstSuccessRate:.5,overallSuccessRate:.75,averageDurationMs:200});
-    r.samples[0].prompt='<script>alert(1)</script>';r.samples[1].prompt='=1+1';expect(reportHtml(r)).not.toContain('<script>');expect(reportCsv(r)).toContain("'=1+1");
+    r.samples[0].attempts[0].ref={taskId:'mwe7g3izkl6r7h7h',chatId:'mwe7g3izkl6r7h7h',subChatId:'mwe7g3iz3wrhy8n4',sessionId:'effe7bfa-d07a-4ff6-b5fd-e542137181a8',inputId:'4c563f5e-b3d2-4aef-8c7f-b55488dc0fc4',messageId:'4c563f5e-b3d2-4aef-8c7f-b55488dc0fc4'};
+    r.samples[2].attempts[0].ref={taskId:'first',inputId:'input-first'};r.samples[2].attempts[1].ref={taskId:'retry',inputId:'input-retry'};
+    const rows=parse(reportCsv(r),{columns:true,bom:true}) as Record<string,string>[];
+    expect(JSON.parse(rows[0]['关联信息'])).toEqual(r.samples[0].attempts[0].ref);
+    expect(rows.filter((row:Record<string,string>)=>row['样本ID']==='3').map((row:Record<string,string>)=>JSON.parse(row['关联信息']).taskId)).toEqual(['first','retry']);
+    expect(rows[1]['关联信息']).toBe('{}');expect(JSON.parse(reportJson(r)).samples[0].attempts[0].ref).toEqual(r.samples[0].attempts[0].ref);
+    r.samples[0].prompt='<script>alert(1)</script>';r.samples[1].prompt='=1+1';expect(reportHtml(r)).not.toContain('<script>');expect(reportCsv(r)).toContain("'=1+1");expect(reportCsv(r)).toContain('关联信息');expect(reportCsv(r)).toContain('mwe7g3izkl6r7h7h');expect(reportHtml(r)).toContain('关联信息');
   });
 });

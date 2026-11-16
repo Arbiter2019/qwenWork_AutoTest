@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { buildApp } from '../apps/server/src/api.ts';
 import { Store } from '../packages/storage/src/store.ts';
 import { DEFAULT_CONFIG, type AppAdapter } from '../packages/core/src/types.ts';
 
 const resources: { close(): unknown }[] = [];
+function configFixture() { const root = mkdtempSync(join(tmpdir(), 'qwen-api-')); resources.push({ close: () => rmSync(root, { recursive: true, force: true }) }); const appPath = join(root, 'QwenWorkCN.app'); mkdirSync(join(appPath, 'Contents/MacOS'), { recursive: true }); writeFileSync(join(appPath, 'Contents/MacOS/QwenWorkCN'), ''); return { appPath, config: join(root, 'config.json') }; }
 afterEach(async () => { for (const r of resources.splice(0).reverse()) await r.close(); });
 const adapter: AppAdapter = {
   health: async () => ({ connected: true, mode: 'real' }),
@@ -11,8 +15,29 @@ const adapter: AppAdapter = {
   inspect: async () => ({ status: 'succeeded', output: 'ok', collection: 'partial' }),
   answer: async () => {}, stop: async () => true,
 };
-async function setup() { const store = new Store(':memory:'); const app = await buildApp({ store, adapter, serveStatic: false }); resources.push(app); return app; }
+async function setup() { const { config } = configFixture(); const store = new Store(':memory:'); const app = await buildApp({ store, adapter, serveStatic: false, appConfigPath: config, desktopPlatform: 'darwin' }); resources.push(app); return app; }
 describe('local API', () => {
+  it('validates and saves the selected desktop app path', async () => {
+    const { appPath } = configFixture(); const app = await setup();
+    expect((await app.inject({ url: '/api/app-config' })).json().platform).toBe('darwin');
+    expect((await app.inject({ method: 'POST', url: '/api/app-config', payload: { path: appPath + '/' } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: '/api/app-config', payload: { path: '/tmp/not-an-app.txt' } })).statusCode).toBe(400);
+    expect((await app.inject({ url: '/api/app-config' })).json().appPath).toBe(appPath);
+  });
+  it('preserves selection on cancellation and verifies connection after launching', async () => {
+    const { appPath, config } = configFixture(); let selected: string | undefined = appPath; let connected = false, launches = 0;
+    const app = await buildApp({ store: new Store(':memory:'), adapter: { ...adapter, health: async () => ({ connected, mode: 'real' }) }, serveStatic: false, appConfigPath: config, desktopPlatform: 'darwin', selectApp: async () => selected, launchDesktopApp: async path => { expect(path).toBe(appPath); launches++; connected = true; } }); resources.push(app);
+    const picked = await app.inject({ method: 'POST', url: '/api/app-config/pick', payload: {} }); expect(picked.json().appPath).toBe(appPath);
+    selected = undefined; const cancelled = await app.inject({ method: 'POST', url: '/api/app-config/pick', payload: {} }); expect(cancelled.json()).toMatchObject({ cancelled: true, appPath });
+    expect((await app.inject({ method: 'POST', url: '/api/app-config/start', payload: {} })).json().adapter.connected).toBe(true); expect(launches).toBe(1);
+    await app.inject({ method: 'POST', url: '/api/app-config/start', payload: {} }); expect(launches).toBe(1);
+    expect((await app.inject({ method: 'POST', url: '/api/app-config/start', headers: { origin: 'https://evil.example' }, payload: {} })).statusCode).toBe(403);
+  });
+  it('reports a failed connection without claiming successful startup', async () => {
+    const { appPath, config } = configFixture(); const app = await buildApp({ store: new Store(':memory:'), adapter: { ...adapter, health: async () => ({ connected: false, mode: 'real' }) }, serveStatic: false, appConfigPath: config, desktopPlatform: 'darwin', launchDesktopApp: async () => {}, appConnectTimeoutMs: 0 }); resources.push(app);
+    await app.inject({ method: 'POST', url: '/api/app-config', payload: { path: appPath } });
+    const result = await app.inject({ method: 'POST', url: '/api/app-config/start', payload: {} }); expect(result.statusCode).toBe(409); expect(result.json().message).toContain('正常退出');
+  });
   it('downloads a usable template and returns physical error rows', async () => {
     const app = await setup(); const template = await app.inject({ url: '/api/template.csv' });
     expect(template.statusCode).toBe(200); expect(template.headers['content-disposition']).toContain('attachment');

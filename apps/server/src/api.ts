@@ -8,6 +8,7 @@ import { metrics } from '../../../packages/core/src/metrics.ts';
 import { reportCsv, reportHtml, reportJson } from '../../../packages/core/src/report.ts';
 import { Scheduler } from '../../../packages/core/src/scheduler.ts';
 import type { AppAdapter, RunStore } from '../../../packages/core/src/types.ts';
+import { launchApp, pickAppPath, readAppConfig, saveAppPath, validateAppPath } from './app-config.ts';
 
 const sampleSchema = z.object({ id: z.string().trim().min(1).max(500), prompt: z.string().min(1).max(1_000_000).refine(v => !!v.trim(), 'Prompt 必填'), expertKitId: z.string().trim().max(500).default(''), model: z.enum(['标准', '高级']).default('标准') }).strict();
 const nonNegative = z.number().int().min(0).max(86_400_000);
@@ -16,11 +17,20 @@ const startSchema = z.object({ name: z.string().trim().max(120).default('测试�
 const localHostname = (host: string) => ['localhost', '127.0.0.1', '[::1]', '::1'].includes(host.toLowerCase());
 function parseLocalOrigin(value: string): boolean { try { const url = new URL(value); return url.protocol === 'http:' && localHostname(url.hostname) && !url.username && !url.password; } catch { return false; } }
 
-export interface BuildOptions { adapter: AppAdapter; store: RunStore; serveStatic?: boolean; staticRoot?: string; recover?: boolean }
-export async function buildApp({ adapter, store, serveStatic = true, staticRoot = resolve('dist/web'), recover = false }: BuildOptions) {
+export interface BuildOptions {
+  adapter: AppAdapter; store: RunStore; serveStatic?: boolean; staticRoot?: string; recover?: boolean; appConfigPath?: string;
+  desktopPlatform?: NodeJS.Platform; selectApp?: () => Promise<string | undefined>; launchDesktopApp?: (path: string) => Promise<void>; appConnectTimeoutMs?: number;
+}
+export async function buildApp({ adapter, store, serveStatic = true, staticRoot = resolve('dist/web'), recover = false, appConfigPath = resolve('data/app-config.json'), desktopPlatform = process.platform, selectApp = () => pickAppPath(desktopPlatform), launchDesktopApp = path => launchApp(path, process.env.QWEN_CDP_ENDPOINT ?? 'http://127.0.0.1:9229', desktopPlatform), appConnectTimeoutMs = 15_000 }: BuildOptions) {
   const app = Fastify({ logger: false, bodyLimit: 10 * 1024 * 1024 });
   const scheduler = new Scheduler(store, adapter);
   let creatingRun = false;
+  let appConfig = readAppConfig(appConfigPath, desktopPlatform);
+  let appConfigBusy = false;
+  async function withAppLock<T>(action: () => Promise<T>): Promise<T> {
+    if (appConfigBusy) throw Object.assign(new Error('应用选择或连接正在处理中，请稍候'), { statusCode: 409 });
+    appConfigBusy = true; try { return await action(); } finally { appConfigBusy = false; }
+  }
   app.addHook('onRequest', async (request, reply) => {
     let hostname = ''; try { hostname = new URL(`http://${request.headers.host ?? ''}`).hostname; } catch {}
     if (!localHostname(hostname)) return reply.code(403).send({ message: '仅允许本机访问' });
@@ -37,6 +47,29 @@ export async function buildApp({ adapter, store, serveStatic = true, staticRoot 
   });
   const getRun = (id: string) => { const run = store.get(id); if (!run) throw Object.assign(new Error('测试运行不存在'), { statusCode: 404 }); return run; };
   app.get('/api/health', async () => ({ adapter: await adapter.health() }));
+  app.get('/api/app-config', async () => appConfig);
+  app.post('/api/app-config', async request => withAppLock(async () => {
+    const { path } = z.object({ path: z.string().trim().min(1).max(1000) }).strict().parse(request.body);
+    appConfig = saveAppPath(appConfigPath, path, desktopPlatform); return appConfig;
+  }));
+  app.post('/api/app-config/pick', async () => withAppLock(async () => {
+    const path = await selectApp(); if (!path) return { ...appConfig, cancelled: true };
+    appConfig = saveAppPath(appConfigPath, path, desktopPlatform); return appConfig;
+  }));
+  app.post('/api/app-config/start', async () => withAppLock(async () => {
+    if (!appConfig.appPath) throw new Error('请先选择千问办公 App 路径');
+    const path = validateAppPath(appConfig.appPath, desktopPlatform);
+    let health = await adapter.health();
+    if (health.connected) return { adapter: health, message: '千问办公已连接，无需重新启动' };
+    await launchDesktopApp(path);
+    const deadline = Date.now() + appConnectTimeoutMs;
+    do {
+      health = await adapter.health(); if (health.connected) return { adapter: health, message: '千问办公已连接' };
+      if (Date.now() >= deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } while (Date.now() < deadline);
+    throw Object.assign(new Error('尚未连接千问办公。如果 App 已运行，请先保存任务并正常退出，再点击“启动并连接”；平台不会自动退出 App。'), { statusCode: 409 });
+  }));
   app.get('/api/template.csv', async (_request, reply) => reply.type('text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="qwenwork-template.csv"').send(CSV_TEMPLATE));
   app.post('/api/import', async request => { const { csv } = z.object({ csv: z.string().max(10 * 1024 * 1024) }).strict().parse(request.body); const result = parseCsv(csv); return { samples: result.samples, errors: result.errors.map(e => ({ row: e.line, message: e.message })) }; });
   app.get('/api/runs', async () => ({ runs: store.list() }));
